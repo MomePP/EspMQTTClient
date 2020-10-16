@@ -4,19 +4,6 @@
 #include <PubSubClient.h>
 #include <vector>
 
-#ifdef ESP8266
-
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#include <ESP8266mDNS.h>
-#include <ESP8266HTTPUpdateServer.h>
-
-#define WebServer ESP8266WebServer
-#define ESPmDNS ESP8266mDNS
-#define ESPHTTPUpdateServer ESP8266HTTPUpdateServer
-
-#else // for ESP32
-
 #include <WiFiClient.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
@@ -24,7 +11,7 @@
 
 #define ESPHTTPUpdateServer ESP32HTTPUpdateServer
 
-#endif
+#define MAX_TOPIC_SUBSCRIPTION_LIST_SIZE    16
 
 void onConnectionEstablished(); // MUST be implemented in your sketch. Called once everythings is connected (Wifi, mqtt).
 
@@ -61,16 +48,6 @@ private:
     bool _mqttLastWillRetain;
     unsigned int _failedMQTTConnectionAttemptCount;
 
-    PubSubClient _mqttClient;
-
-    struct TopicSubscriptionRecord
-    {
-        String topic;
-        MessageReceivedCallback callback;
-        MessageReceivedCallbackWithTopic callbackWithTopic;
-    };
-    std::vector<TopicSubscriptionRecord> _topicSubscriptionList;
-
     // HTTP update server related
     char *_updateServerAddress;
     char *_updateServerUsername;
@@ -93,6 +70,26 @@ private:
     unsigned int _connectionEstablishedCount; // Incremented before each _connectionEstablishedCallback call
 
 public:
+    PubSubClient _mqttClient;
+
+    struct TopicSubscriptionRecord
+    {
+        String topic;
+        MessageReceivedCallback callback;
+        MessageReceivedCallbackWithTopic callbackWithTopic;
+        uint8_t processID;
+    };
+    std::vector<TopicSubscriptionRecord> _topicSubscriptionList;
+    std::vector<TopicSubscriptionRecord> _failedSubscriptionList;
+
+    uint8_t isNewPayloadMQTT = 0;
+    char payload_buf[128];
+    uint8_t payload_len;
+
+    uint8_t _broadcastChannel = 0;
+    String _broadcastTopic = "gogoboard/broadcastT/";
+    String _broadcastPayload = "gogoBroadcastMQTT!@LILCMU";
+
     // Wifi + MQTT with no MQTT authentification
     EspMQTTClient(
         const char *wifiSsid,
@@ -141,9 +138,11 @@ public:
     // MQTT related
     bool setMaxPacketSize(const uint16_t size); // Pubsubclient >= 2.8; override the default value of MQTT_MAX_PACKET_SIZE
     bool publish(const String &topic, const String &payload, bool retain = false);
-    bool subscribe(const String &topic, MessageReceivedCallback messageReceivedCallback);
-    bool subscribe(const String &topic, MessageReceivedCallbackWithTopic messageReceivedCallback);
+    bool subscribe(uint8_t processID, const String &topic, MessageReceivedCallback messageReceivedCallback);
+    bool subscribe(uint8_t processID, const String &topic, MessageReceivedCallbackWithTopic messageReceivedCallback);
+    void subscribeFailedList(void);
     bool unsubscribe(const String &topic);                                       //Unsubscribes from the topic, if it exists, and removes it from the CallbackList.
+    bool unsubscribeAll(void);
     void setKeepAlive(uint16_t keepAliveSeconds);                                // Change the keepalive interval (15 seconds by default)
     inline void setMqttClientName(const char *name) { _mqttClientName = name; }; // Allow to set client name manually (must be done in setup(), else it will not work.)
 
