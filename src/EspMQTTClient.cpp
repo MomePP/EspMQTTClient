@@ -77,7 +77,6 @@ EspMQTTClient::EspMQTTClient(
     // other
     _enableSerialLogs = false;
     _drasticResetOnConnectionFailures = false;
-    _connectionEstablishedCallback = onConnectionEstablished;
     _connectionEstablishedCount = 0;
 }
 
@@ -130,6 +129,21 @@ void EspMQTTClient::enableLastWillMessage(const char *topic, const char *message
     _mqttLastWillTopic = (char *)topic;
     _mqttLastWillMessage = (char *)message;
     _mqttLastWillRetain = retain;
+}
+
+// =============== Wifi / connection handling =================
+
+void EspMQTTClient::connectToWifi(const char *ssid, const char *password)
+{
+    _wifiSsid = ssid;
+    _wifiPassword = password;
+
+    WiFi.disconnect(true); //? set state to force reconnecting the network
+}
+
+void EspMQTTClient::forceMQTTConnection(void)
+{
+    _connectingToWifi = true;
 }
 
 // =============== Main loop / connection state handling =================
@@ -232,6 +246,9 @@ void EspMQTTClient::loop()
     if (isMqttConnected && !_mqttConnected)
     {
         _mqttConnected = true;
+        if (_failedSubscriptionList.size() > 0)
+            subscribeFailedList();
+
         onMQTTConnectionEstablished();
     }
 
@@ -286,9 +303,6 @@ void EspMQTTClient::loop()
         }
         else
         {
-            if (_failedSubscriptionList.size() > 0)
-                subscribeFailedList();
-
             _failedMQTTConnectionAttemptCount = 0;
             _nextMqttConnectionAttemptMillis = 0;
         }
@@ -349,6 +363,9 @@ void EspMQTTClient::onMQTTConnectionLost()
         extSerial.printf("MQTT: Retrying to connect in %i seconds. \n", _mqttReconnectionAttemptDelay / 1000);
     }
 #endif
+
+    //? backup latest subscribe list
+    _failedSubscriptionList = _topicSubscriptionList;
 }
 
 // =============== Public functions for interaction with thus lib =================
@@ -403,7 +420,7 @@ bool EspMQTTClient::subscribe(uint8_t processID, const String &topic, MessageRec
         if (_enableSerialLogs)
             extSerial.println("MQTT! Trying to subscribe when disconnected, skipping.");
 #endif
-        _failedSubscriptionList.push_back({topic, MessageReceivedCallback, NULL, processID});
+        _failedSubscriptionList.push_back({topic, messageReceivedCallback, NULL, processID});
 
         return false;
     }
@@ -412,7 +429,7 @@ bool EspMQTTClient::subscribe(uint8_t processID, const String &topic, MessageRec
     if (_topicSubscriptionList.size() >= MAX_TOPIC_SUBSCRIPTION_LIST_SIZE)
     {
 #ifdef ENABLE_MQTT_LOGGING
-        if (mEnableSerialLogs)
+        if (_enableSerialLogs)
             extSerial.println("MQTT! Subscription list is full, ignored.");
 #endif
         return false;
@@ -459,9 +476,8 @@ void EspMQTTClient::subscribeFailedList(void)
     for (int i = 0; i < _failedSubscriptionList.size(); i++)
     {
         subscribe(_failedSubscriptionList[i].processID, _failedSubscriptionList[i].topic, _failedSubscriptionList[i].callback);
-        _failedSubscriptionList.erase(_failedSubscriptionList.begin() + i);
-        i--;
     }
+    _failedSubscriptionList.clear();
 }
 
 bool EspMQTTClient::unsubscribe(const String &topic)
@@ -479,10 +495,17 @@ bool EspMQTTClient::unsubscribe(const String &topic)
 
     for (int i = 0; i < _topicSubscriptionList.size(); i++)
     {
+#ifdef ENABLE_MQTT_LOGGING
+        extSerial.printf("unsub count: %d\n", i);
+#endif
         if (_topicSubscriptionList[i].topic.equals(topic))
         {
             if (_mqttClient.unsubscribe(topic.c_str()))
             {
+#ifdef ENABLE_MQTT_LOGGING
+                extSerial.printf("unsub topic: %s", _topicSubscriptionList[i].topic.c_str());
+#endif
+
                 _topicSubscriptionList.erase(_topicSubscriptionList.begin() + i);
                 i--;
 
@@ -508,27 +531,13 @@ bool EspMQTTClient::unsubscribe(const String &topic)
 
 bool EspMQTTClient::unsubscribeAll(void)
 {
-    // Do not try to unsubscribe if MQTT is not connected.
-    if (!isConnected())
-    {
-#ifdef ENABLE_MQTT_LOGGING
-        if (_enableSerialLogs)
-            extSerial.println("MQTT! Trying to unsubscribe when disconnected, skipping.");
-#endif
-
-        return false;
-    }
-
     for (int i = 0; i < _topicSubscriptionList.size(); i++)
     {
         if (_mqttClient.unsubscribe(_topicSubscriptionList[i].topic.c_str()))
         {
-            _topicSubscriptionList.erase(_topicSubscriptionList.begin() + i);
-            i--;
-
 #ifdef ENABLE_MQTT_LOGGING
             if (_enableSerialLogs)
-                extSerial.printf("MQTT: Unsubscribed from %s\n", topic.c_str());
+                extSerial.printf("MQTT: Unsubscribed from %s\n", _topicSubscriptionList[i].topic.c_str());
 #endif
         }
         else
@@ -537,10 +546,10 @@ bool EspMQTTClient::unsubscribeAll(void)
             if (_enableSerialLogs)
                 extSerial.println("MQTT! unsubscribe failed");
 #endif
-
             return false;
         }
     }
+    _topicSubscriptionList.clear();
 
     return true;
 }
@@ -750,7 +759,7 @@ void EspMQTTClient::mqttMessageReceivedCallback(char *topic, byte *payload, unsi
             }
 
 #ifdef ENABLE_MQTT_LOGGING
-            if (mEnableSerialLogs)
+            if (_enableSerialLogs)
                 extSerial.printf("pid: %d\n", isNewPayloadMQTT);
 #endif
         }

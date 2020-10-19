@@ -13,8 +13,6 @@
 
 #define MAX_TOPIC_SUBSCRIPTION_LIST_SIZE    16
 
-void onConnectionEstablished(); // MUST be implemented in your sketch. Called once everythings is connected (Wifi, mqtt).
-
 typedef std::function<void()> ConnectionEstablishedCallback;
 typedef std::function<void(const String &message)> MessageReceivedCallback;
 typedef std::function<void(const String &topicStr, const String &message)> MessageReceivedCallbackWithTopic;
@@ -131,6 +129,10 @@ public:
     void enableMQTTPersistence();                                                                     // Tell the broker to establish a persistent connection. Disabled by default. Must be called before the first loop() execution
     void enableLastWillMessage(const char *topic, const char *message, const bool retain = false);    // Must be set before the first loop() call.
     void enableDrasticResetOnConnectionFailures() { _drasticResetOnConnectionFailures = true; }       // Can be usefull in special cases where the ESP board hang and need resetting (#59)
+
+    // Wifi connection functionalities
+    void connectToWifi(const char *ssid, const char *password);
+    void forceMQTTConnection(void);
 
     // Main loop, to call at each sketch loop()
     void loop();
