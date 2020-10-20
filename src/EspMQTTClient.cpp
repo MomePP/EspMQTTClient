@@ -366,6 +366,7 @@ void EspMQTTClient::onMQTTConnectionLost()
 
     //? backup latest subscribe list
     _failedSubscriptionList = _topicSubscriptionList;
+    _topicSubscriptionList.clear();
 }
 
 // =============== Public functions for interaction with thus lib =================
@@ -413,6 +414,16 @@ bool EspMQTTClient::publish(const String &topic, const String &payload, bool ret
 
 bool EspMQTTClient::subscribe(uint8_t processID, const String &topic, MessageReceivedCallback messageReceivedCallback)
 {
+    // Check the possibility to add a new topic
+    if (_topicSubscriptionList.size() >= MAX_TOPIC_SUBSCRIPTION_LIST_SIZE)
+    {
+#ifdef ENABLE_MQTT_LOGGING
+        if (_enableSerialLogs)
+            extSerial.println("MQTT! Subscription list is full, ignored.");
+#endif
+        return false;
+    }
+
     // Do not try to subscribe if MQTT is not connected.
     if (!isConnected())
     {
@@ -422,16 +433,6 @@ bool EspMQTTClient::subscribe(uint8_t processID, const String &topic, MessageRec
 #endif
         _failedSubscriptionList.push_back({topic, messageReceivedCallback, NULL, processID});
 
-        return false;
-    }
-
-    // Check the possibility to add a new topic
-    if (_topicSubscriptionList.size() >= MAX_TOPIC_SUBSCRIPTION_LIST_SIZE)
-    {
-#ifdef ENABLE_MQTT_LOGGING
-        if (_enableSerialLogs)
-            extSerial.println("MQTT! Subscription list is full, ignored.");
-#endif
         return false;
     }
 
