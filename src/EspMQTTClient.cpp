@@ -52,6 +52,7 @@ EspMQTTClient::EspMQTTClient(
                                   _mqttClient(mqttServerIp, mqttServerPort, _wifiClient)
 {
     // WiFi connection
+    _handleWiFi = (wifiSsid != NULL);
     _wifiConnected = false;
     _connectingToWifi = false;
     _nextWifiConnectionAttemptMillis = 500;
@@ -68,6 +69,7 @@ EspMQTTClient::EspMQTTClient(
     _mqttCleanSession = true;
     _mqttClient.setCallback([this](char *topic, byte *payload, unsigned int length) { this->mqttMessageReceivedCallback(topic, payload, length); });
     _failedMQTTConnectionAttemptCount = 0;
+    _defaultQoS = 0;
 
     // Web updater
     _updateServerAddress = NULL;
@@ -150,26 +152,40 @@ void EspMQTTClient::forceMQTTConnection(void)
 
 void EspMQTTClient::loop()
 {
-    static bool firstLoopCall = true;
+    // WIFI handling
+    bool wifiStateChanged = handleWiFi();
 
-    // When it's the first loop call, reset the wifi radio and schedule the wifi connection
-    if (firstLoopCall && _wifiSsid != NULL)
+    // If there is a change in the wifi connection state, don't handle the mqtt connection state right away.
+    // We will wait at least one lopp() call. This prevent the library from doing too much thing in the same loop() call.
+    if (wifiStateChanged)
+        return;
+
+    // MQTT Handling
+    bool mqttStateChanged = handleMQTT();
+    if (mqttStateChanged)
+        return;
+
+    // Procewss the delayed execution commands
+    processDelayedExecutionRequests();
+}
+
+bool EspMQTTClient::handleWiFi()
+{
+    // When it's the first call, reset the wifi radio and schedule the wifi connection
+    static bool firstLoopCall = true;
+    if (_handleWiFi && firstLoopCall)
     {
         WiFi.disconnect(true);
         _nextWifiConnectionAttemptMillis = millis() + 500;
         firstLoopCall = false;
-        return;
+        return true;
     }
 
-    // Delayed execution requests handling
-    processDelayedExecutionRequests();
-
-    /*** WIFI connection state handling ***/
-
+    // Get the current connextion status
     bool isWifiConnected = (WiFi.status() == WL_CONNECTED);
 
-    // A connection to wifi has just been established
-    if (isWifiConnected && _connectingToWifi)
+    // Connection established
+    if (isWifiConnected && !_wifiConnected)
     {
         onWiFiConnectionEstablished();
         _connectingToWifi = false;
@@ -181,7 +197,7 @@ void EspMQTTClient::loop()
         _nextMqttConnectionAttemptMillis = millis() + 500;
     }
 
-    // We are trying to connect to Wifi
+    // Connection in progress
     else if (_connectingToWifi)
     {
         if (WiFi.status() == WL_CONNECT_FAILED || millis() - _lastWifiConnectiomAttemptMillis >= _wifiReconnectionAttemptDelay)
@@ -199,14 +215,16 @@ void EspMQTTClient::loop()
         }
     }
 
-    // The connection to wifi has just been lost
+    // Connection lost
     else if (!isWifiConnected && _wifiConnected)
     {
         onWiFiConnectionLost();
-        _nextWifiConnectionAttemptMillis = millis() + 500;
+
+        if (_handleWiFi)
+            _nextWifiConnectionAttemptMillis = millis() + 500;
     }
 
-    // We are connected to wifi since at least one loop() call
+    // Connected since at least one loop() call
     else if (isWifiConnected && _wifiConnected)
     {
         // Web updater handling
@@ -219,9 +237,9 @@ void EspMQTTClient::loop()
         }
     }
 
-    // We are disconnected to wifi since at least one loop() call
+    // Disconnected since at least one loop() call
     // Then, if we handle the wifi reconnection process and the waiting delay has expired, we connect to wifi
-    else if (_wifiSsid != NULL && _nextWifiConnectionAttemptMillis > 0 && millis() >= _nextWifiConnectionAttemptMillis)
+    else if (_handleWiFi && _nextWifiConnectionAttemptMillis > 0 && millis() >= _nextWifiConnectionAttemptMillis)
     {
         connectToWifi();
         _nextWifiConnectionAttemptMillis = 0;
@@ -229,20 +247,28 @@ void EspMQTTClient::loop()
         _lastWifiConnectiomAttemptMillis = millis();
     }
 
-    // If there is a change in the wifi connection state, don't handle the mqtt connection state right away.
-    // This prevent the library from doing too much thing in the same loop() call.
+    /**** Detect and return if there was a change in the WiFi state ****/
+
     if (isWifiConnected != _wifiConnected)
     {
         _wifiConnected = isWifiConnected;
-        return;
+        return true;
     }
+    else
+        return false;
+}
 
-    /*** MQTT Connection state handling ***/
-
+bool EspMQTTClient::handleMQTT()
+{
+    // PubSubClient main lopp() call
     _mqttClient.loop();
-    bool isMqttConnected = isWifiConnected && _mqttClient.connected();
 
-    // A connection to MQTT has just been established
+    // Get the current connextion status
+    bool isMqttConnected = isWifiConnected() && _mqttClient.connected();
+
+    /***** Detect ans handle the current MQTT handling state *****/
+
+    // Connection established
     if (isMqttConnected && !_mqttConnected)
     {
         _mqttConnected = true;
@@ -252,18 +278,25 @@ void EspMQTTClient::loop()
         onMQTTConnectionEstablished();
     }
 
-    // A connection to MQTT has just been lost
+    // Connection lost
     else if (!isMqttConnected && _mqttConnected)
     {
         onMQTTConnectionLost();
         _nextMqttConnectionAttemptMillis = millis() + _mqttReconnectionAttemptDelay;
     }
 
-    // We made a MQTT connection attempt if the waiting delay has ended.
-    else if (isWifiConnected && _nextMqttConnectionAttemptMillis > 0 && millis() >= _nextMqttConnectionAttemptMillis)
+    // It's time to  connect to the MQTT broker
+    else if (isWifiConnected() && _nextMqttConnectionAttemptMillis > 0 && millis() >= _nextMqttConnectionAttemptMillis)
     {
-        if (!connectToMqttBroker())
+        // Connect to MQTT broker
+        if (connectToMqttBroker())
         {
+            _failedMQTTConnectionAttemptCount = 0;
+            _nextMqttConnectionAttemptMillis = 0;
+        }
+        else
+        {
+            // Connection failed, plan another connection attempt
             _nextMqttConnectionAttemptMillis = millis() + _mqttReconnectionAttemptDelay;
             _mqttClient.disconnect();
             _failedMQTTConnectionAttemptCount++;
@@ -273,6 +306,7 @@ void EspMQTTClient::loop()
                 extSerial.printf("MQTT!: Failed MQTT connection count: %i \n", _failedMQTTConnectionAttemptCount);
 #endif
 
+            // When there is too many failed attempt, sometimes it help to reset the WiFi connection or to restart the board.
             if (_failedMQTTConnectionAttemptCount == 8)
             {
 #ifdef ENABLE_MQTT_LOGGING
@@ -301,14 +335,17 @@ void EspMQTTClient::loop()
 #endif
             }
         }
-        else
-        {
-            _failedMQTTConnectionAttemptCount = 0;
-            _nextMqttConnectionAttemptMillis = 0;
-        }
     }
 
-    _mqttConnected = isMqttConnected;
+    /**** Detect and return if there was a change in the MQTT state ****/
+
+    if (_mqttConnected != isMqttConnected)
+    {
+        _mqttConnected = isMqttConnected;
+        return true;
+    }
+    else
+        return false;
 }
 
 void EspMQTTClient::onWiFiConnectionEstablished()
@@ -341,7 +378,7 @@ void EspMQTTClient::onWiFiConnectionLost()
 #endif
 
     // If we handle wifi, we force disconnection to clear the last connection
-    if (_wifiSsid != NULL)
+    if (_handleWiFi)
     {
         WiFi.disconnect(true);
         MDNS.end();
@@ -412,7 +449,7 @@ bool EspMQTTClient::publish(const String &topic, const String &payload, bool ret
     return success;
 }
 
-bool EspMQTTClient::subscribe(uint8_t processID, const String &topic, MessageReceivedCallback messageReceivedCallback)
+bool EspMQTTClient::subscribe(uint8_t processID, const String &topic, MessageReceivedCallback messageReceivedCallback, uint8_t qos)
 {
     // Check the possibility to add a new topic
     if (_topicSubscriptionList.size() >= MAX_TOPIC_SUBSCRIPTION_LIST_SIZE)
@@ -436,7 +473,7 @@ bool EspMQTTClient::subscribe(uint8_t processID, const String &topic, MessageRec
         return false;
     }
 
-    bool success = _mqttClient.subscribe(topic.c_str());
+    bool success = _mqttClient.subscribe(topic.c_str(), qos);
 
     if (success)
     {
@@ -462,9 +499,9 @@ bool EspMQTTClient::subscribe(uint8_t processID, const String &topic, MessageRec
     return success;
 }
 
-bool EspMQTTClient::subscribe(uint8_t processID, const String &topic, MessageReceivedCallbackWithTopic messageReceivedCallback)
+bool EspMQTTClient::subscribe(uint8_t processID, const String &topic, MessageReceivedCallbackWithTopic messageReceivedCallback, uint8_t qos)
 {
-    if (subscribe(processID, topic, (MessageReceivedCallback)NULL))
+    if (subscribe(processID, topic, (MessageReceivedCallback)NULL, qos))
     {
         _topicSubscriptionList[_topicSubscriptionList.size() - 1].callbackWithTopic = messageReceivedCallback;
         return true;
@@ -476,7 +513,7 @@ void EspMQTTClient::subscribeFailedList(void)
 {
     for (int i = 0; i < _failedSubscriptionList.size(); i++)
     {
-        subscribe(_failedSubscriptionList[i].processID, _failedSubscriptionList[i].topic, _failedSubscriptionList[i].callback);
+        subscribe(_failedSubscriptionList[i].processID, _failedSubscriptionList[i].topic, _failedSubscriptionList[i].callback, _defaultQoS);
     }
     _failedSubscriptionList.clear();
 }
