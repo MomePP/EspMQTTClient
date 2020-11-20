@@ -22,7 +22,6 @@ class EspMQTTClient
 {
 private:
     // Wifi related
-    bool _handleWiFi;
     bool _wifiConnected;
     bool _connectingToWifi;
     unsigned long _lastWifiConnectiomAttemptMillis;
@@ -134,7 +133,6 @@ public:
 
     // Wifi connection functionalities
     void connectToWifi(const char *ssid, const char *password);
-    void forceMQTTConnection(void);
 
     // Main loop, to call at each sketch loop()
     void loop();

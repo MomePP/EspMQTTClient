@@ -52,7 +52,6 @@ EspMQTTClient::EspMQTTClient(
                                   _mqttClient(mqttServerIp, mqttServerPort, _wifiClient)
 {
     // WiFi connection
-    _handleWiFi = (wifiSsid != NULL);
     _wifiConnected = false;
     _connectingToWifi = false;
     _nextWifiConnectionAttemptMillis = 500;
@@ -143,11 +142,6 @@ void EspMQTTClient::connectToWifi(const char *ssid, const char *password)
     WiFi.disconnect(true); //? set state to force reconnecting the network
 }
 
-void EspMQTTClient::forceMQTTConnection(void)
-{
-    _connectingToWifi = true;
-}
-
 // =============== Main loop / connection state handling =================
 
 void EspMQTTClient::loop()
@@ -173,7 +167,7 @@ bool EspMQTTClient::handleWiFi()
 {
     // When it's the first call, reset the wifi radio and schedule the wifi connection
     static bool firstLoopCall = true;
-    if (_handleWiFi && firstLoopCall)
+    if (_wifiSsid != NULL && firstLoopCall)
     {
         WiFi.disconnect(true);
         _nextWifiConnectionAttemptMillis = millis() + 500;
@@ -220,7 +214,7 @@ bool EspMQTTClient::handleWiFi()
     {
         onWiFiConnectionLost();
 
-        if (_handleWiFi)
+        if (_wifiSsid != NULL)
             _nextWifiConnectionAttemptMillis = millis() + 500;
     }
 
@@ -239,7 +233,7 @@ bool EspMQTTClient::handleWiFi()
 
     // Disconnected since at least one loop() call
     // Then, if we handle the wifi reconnection process and the waiting delay has expired, we connect to wifi
-    else if (_handleWiFi && _nextWifiConnectionAttemptMillis > 0 && millis() >= _nextWifiConnectionAttemptMillis)
+    else if (_wifiSsid != NULL && _nextWifiConnectionAttemptMillis > 0 && millis() >= _nextWifiConnectionAttemptMillis)
     {
         connectToWifi();
         _nextWifiConnectionAttemptMillis = 0;
@@ -378,7 +372,7 @@ void EspMQTTClient::onWiFiConnectionLost()
 #endif
 
     // If we handle wifi, we force disconnection to clear the last connection
-    if (_handleWiFi)
+    if (_wifiSsid != NULL)
     {
         WiFi.disconnect(true);
         MDNS.end();
